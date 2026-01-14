@@ -1,6 +1,5 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
-import { handle } from "hono/vercel";
 import {
   streamText,
   stepCountIs,
@@ -17,12 +16,12 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import type { Restaurant } from "../src/types/restaurant.js";
-import { GeometryCache } from "./utils/geometryOptimizer.js";
+import { GeometryCache } from "./_utils/geometryOptimizer.js";
 import { point, booleanPointInPolygon } from "@turf/turf";
 import type { Feature, Polygon, MultiPolygon } from "geojson";
-import { wrapToolsWithGeometryOptimization } from "./utils/toolWrapper.js";
-import { env, getGoogleApiKey } from "./env.js";
-import { safeParseChatRequest } from "./schemas/chat.js";
+import { wrapToolsWithGeometryOptimization } from "./_utils/toolWrapper.js";
+import { env, getGoogleApiKey } from "./_env.js";
+import { safeParseChatRequest } from "./_schemas/chat.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -48,10 +47,10 @@ try {
 function normalizeForMatching(str: string): string {
   return str
     .toLowerCase()
-    .replace(/^(the|a|an)\s+/i, '')  // Remove leading articles
-    .replace(/\s+and\s+/g, ' ')      // Remove "and" between words
-    .replace(/[^a-z0-9\s]/g, '')     // Remove special chars
-    .replace(/\s+/g, ' ')            // Collapse multiple spaces
+    .replace(/^(the|a|an)\s+/i, "") // Remove leading articles
+    .replace(/\s+and\s+/g, " ") // Remove "and" between words
+    .replace(/[^a-z0-9\s]/g, "") // Remove special chars
+    .replace(/\s+/g, " ") // Collapse multiple spaces
     .trim();
 }
 
@@ -61,7 +60,9 @@ function normalizeForMatching(str: string): string {
 function levenshteinDistance(str1: string, str2: string): number {
   const len1 = str1.length;
   const len2 = str2.length;
-  const matrix: number[][] = Array(len1 + 1).fill(null).map(() => Array(len2 + 1).fill(0));
+  const matrix: number[][] = Array(len1 + 1)
+    .fill(null)
+    .map(() => Array(len2 + 1).fill(0));
 
   for (let i = 0; i <= len1; i++) matrix[i][0] = i;
   for (let j = 0; j <= len2; j++) matrix[0][j] = j;
@@ -83,33 +84,42 @@ function levenshteinDistance(str1: string, str2: string): number {
  * Fuzzy match a restaurant by name or slug
  * Returns the best match from the search pool
  */
-function fuzzyMatchRestaurant(input: string, searchPool: Restaurant[]): Restaurant | null {
+function fuzzyMatchRestaurant(
+  input: string,
+  searchPool: Restaurant[]
+): Restaurant | null {
   if (!input) return null;
 
   const normalizedInput = normalizeForMatching(input);
-  const inputSlug = input.toLowerCase().replace(/\s+/g, '-');
+  const inputSlug = input.toLowerCase().replace(/\s+/g, "-");
 
   // Tier 1: Exact slug match
-  const exactMatch = searchPool.find(r => r.slug === inputSlug || r.slug === input.toLowerCase());
+  const exactMatch = searchPool.find(
+    (r) => r.slug === inputSlug || r.slug === input.toLowerCase()
+  );
   if (exactMatch) {
     console.log(`✅ Exact slug match: "${input}" → "${exactMatch.name}"`);
     return exactMatch;
   }
 
   // Tier 2: Normalized name match
-  const normalizedMatch = searchPool.find(r =>
-    normalizeForMatching(r.name) === normalizedInput
+  const normalizedMatch = searchPool.find(
+    (r) => normalizeForMatching(r.name) === normalizedInput
   );
   if (normalizedMatch) {
-    console.log(`✅ Normalized name match: "${input}" → "${normalizedMatch.name}"`);
+    console.log(
+      `✅ Normalized name match: "${input}" → "${normalizedMatch.name}"`
+    );
     return normalizedMatch;
   }
 
   // Tier 3: Partial name match
-  const partialMatch = searchPool.find(r => {
+  const partialMatch = searchPool.find((r) => {
     const normalizedName = normalizeForMatching(r.name);
-    return normalizedName.includes(normalizedInput) ||
-           normalizedInput.includes(normalizedName);
+    return (
+      normalizedName.includes(normalizedInput) ||
+      normalizedInput.includes(normalizedName)
+    );
   });
   if (partialMatch) {
     console.log(`✅ Partial name match: "${input}" → "${partialMatch.name}"`);
@@ -117,8 +127,8 @@ function fuzzyMatchRestaurant(input: string, searchPool: Restaurant[]): Restaura
   }
 
   // Tier 4: Slug similarity match
-  const slugMatch = searchPool.find(r =>
-    r.slug.includes(normalizedInput.replace(/\s+/g, '-'))
+  const slugMatch = searchPool.find((r) =>
+    r.slug.includes(normalizedInput.replace(/\s+/g, "-"))
   );
   if (slugMatch) {
     console.log(`✅ Slug similarity match: "${input}" → "${slugMatch.name}"`);
@@ -127,12 +137,14 @@ function fuzzyMatchRestaurant(input: string, searchPool: Restaurant[]): Restaura
 
   // Tier 5: Levenshtein distance match (typos)
   const threshold = normalizedInput.length < 8 ? 2 : 3;
-  const typoMatch = searchPool.find(r => {
+  const typoMatch = searchPool.find((r) => {
     const normalizedName = normalizeForMatching(r.name);
     return levenshteinDistance(normalizedInput, normalizedName) <= threshold;
   });
   if (typoMatch) {
-    console.log(`✅ Typo match (distance ≤${threshold}): "${input}" → "${typoMatch.name}"`);
+    console.log(
+      `✅ Typo match (distance ≤${threshold}): "${input}" → "${typoMatch.name}"`
+    );
     return typoMatch;
   }
 
@@ -140,9 +152,50 @@ function fuzzyMatchRestaurant(input: string, searchPool: Restaurant[]): Restaura
   return null;
 }
 
+// Type definitions for tool results
+interface ToolResult {
+  isError?: boolean;
+  [key: string]: unknown;
+}
+
+interface SearchDocumentsResult extends ToolResult {
+  chunks?: Array<{
+    text?: string;
+    [key: string]: unknown;
+  }>;
+}
+
+interface ExecuteSqlResult extends ToolResult {
+  [key: string]: unknown;
+}
+
+interface GetIsolineResult extends ToolResult {
+  geojson?: Feature<Polygon | MultiPolygon> | Polygon | MultiPolygon;
+  geometry?: Feature<Polygon | MultiPolygon> | Polygon | MultiPolygon;
+  results?: Array<{
+    geojson?: Feature<Polygon | MultiPolygon> | Polygon | MultiPolygon;
+    [key: string]: unknown;
+  }>;
+  restaurants?: Array<{
+    name: string;
+    slug: string;
+    cuisine?: string;
+    price?: string;
+    neighborhood?: string;
+    yelp_rating?: number;
+    michelin_award?: string;
+    nyttop100_rank?: string;
+  }>;
+  restaurantSlugs?: string[];
+  count?: number;
+  filterPoolActive?: boolean;
+  filterPoolSize?: number;
+  searchedPool?: number;
+}
+
 const app = new Hono();
 
-// Enable CORS
+// Enable CORS (safe to have in mounted app, also works for local dev)
 app.use("/*", cors());
 
 // Initialize Google Gemini with validated API key
@@ -156,8 +209,13 @@ const google = createGoogleGenerativeAI({
  * Streaming chat endpoint using AI SDK + Google Gemini + MCP
  * Returns AI SDK stream format compatible with useChat hook
  */
-// Route is "/" because Vercel already routes /api/chat to this file
-app.post("/", async (c) => {
+
+// Handler function - shared for both route patterns (Vercel and local)
+const chatHandler = async (c: Context) => {
+  console.log("✅ [chat.ts] Chat handler invoked!");
+  console.log("   Path:", c.req.path);
+  console.log("   URL:", c.req.url);
+
   // Validate request body with Zod
   const body = await c.req.json();
   const parseResult = safeParseChatRequest(body);
@@ -188,12 +246,22 @@ app.post("/", async (c) => {
   console.log(`📨 Received ${rawMessages.length} messages from client`);
 
   // Extract filterPool from context (restaurants matching current filter bar selections)
-  const filterPool: string[] = (context as any)?.filterPool || [];
-  const hasFilterPool = filterPool.length > 0 && filterPool.length < allRestaurants.length;
+  type ChatContext = {
+    filterPool?: string[];
+    [key: string]: unknown;
+  };
+  const chatContext = context as ChatContext | undefined;
+  const filterPool: string[] = chatContext?.filterPool || [];
+  const hasFilterPool =
+    filterPool.length > 0 && filterPool.length < allRestaurants.length;
   if (hasFilterPool) {
-    console.log(`🎯 Filter pool active: ${filterPool.length} restaurants (of ${allRestaurants.length} total)`);
+    console.log(
+      `🎯 Filter pool active: ${filterPool.length} restaurants (of ${allRestaurants.length} total)`
+    );
   } else {
-    console.log(`🎯 No filter pool - searching all ${allRestaurants.length} restaurants`);
+    console.log(
+      `🎯 No filter pool - searching all ${allRestaurants.length} restaurants`
+    );
   }
 
   // Normalize messages: ensure parts is always an array (AI SDK requirement)
@@ -359,7 +427,9 @@ app.post("/", async (c) => {
     inputSchema: z.object({
       restaurant_name: z
         .string()
-        .describe("The name of the restaurant to look up (e.g., 'Hangawi', 'Carbone', 'Le Bernardin')"),
+        .describe(
+          "The name of the restaurant to look up (e.g., 'Hangawi', 'Carbone', 'Le Bernardin')"
+        ),
     }),
     execute: async (params: { restaurant_name: string }) => {
       const { restaurant_name } = params;
@@ -647,12 +717,19 @@ Example BAD response (too verbose):
   const wrappedSearchDocuments = optimizedTools.search_documents
     ? {
         ...optimizedTools.search_documents,
-        execute: async (args: Record<string, unknown>) => {
+        execute: async (
+          args: Record<string, unknown>
+        ): Promise<SearchDocumentsResult | unknown> => {
           // Call the original search_documents tool
-          const result = await (optimizedTools.search_documents as any).execute(args);
+          const result = await (
+            optimizedTools.search_documents?.execute as (
+              args: Record<string, unknown>
+            ) => Promise<SearchDocumentsResult | unknown>
+          )(args);
 
           // If no filterPool or result has error, return as-is
-          if (!hasFilterPool || !result || (result as any).isError) {
+          const searchResult = result as SearchDocumentsResult;
+          if (!hasFilterPool || !result || searchResult.isError) {
             return result;
           }
 
@@ -664,8 +741,8 @@ Example BAD response (too verbose):
           );
 
           // Filter chunks to only include those mentioning restaurants in filterPool
-          const chunks = (result as any).chunks || [];
-          const filteredChunks = chunks.filter((chunk: any) => {
+          const chunks = searchResult.chunks || [];
+          const filteredChunks = chunks.filter((chunk) => {
             const text = (chunk.text || "").toLowerCase();
             // Check if chunk mentions any restaurant in filterPool
             return Array.from(filterPoolNames).some(
@@ -678,7 +755,7 @@ Example BAD response (too verbose):
           );
 
           return {
-            ...result,
+            ...(result as Record<string, unknown>),
             chunks: filteredChunks,
           };
         },
@@ -689,7 +766,9 @@ Example BAD response (too verbose):
   const wrappedExecuteSql = optimizedTools.execute_sql
     ? {
         ...optimizedTools.execute_sql,
-        execute: async (args: Record<string, unknown>) => {
+        execute: async (
+          args: Record<string, unknown>
+        ): Promise<ExecuteSqlResult | unknown> => {
           let sql = args.sql as string;
 
           // Inject filterPool constraint if active
@@ -702,10 +781,7 @@ Example BAD response (too verbose):
             const whereMatch = sql.match(/\bWHERE\b/i);
             if (whereMatch) {
               // Insert filter after WHERE
-              sql = sql.replace(
-                /\bWHERE\b/i,
-                `WHERE ${filterClause} AND`
-              );
+              sql = sql.replace(/\bWHERE\b/i, `WHERE ${filterClause} AND`);
             } else {
               // Find the end of FROM clause and add WHERE
               // Match: FROM "table-uuid" or FROM table_name
@@ -725,7 +801,11 @@ Example BAD response (too verbose):
           }
 
           // Call the original execute_sql with modified SQL
-          return (optimizedTools.execute_sql as any).execute({
+          return (
+            optimizedTools.execute_sql?.execute as (
+              args: Record<string, unknown>
+            ) => Promise<ExecuteSqlResult | unknown>
+          )({
             ...args,
             sql,
           });
@@ -738,20 +818,32 @@ Example BAD response (too verbose):
   const wrappedGetIsoline = optimizedTools.get_isoline
     ? {
         ...optimizedTools.get_isoline,
-        execute: async (args: Record<string, unknown>) => {
+        execute: async (
+          args: Record<string, unknown>
+        ): Promise<GetIsolineResult | unknown> => {
           // 1. Call original get_isoline for polygon
-          const result = await (optimizedTools.get_isoline as any).execute(args);
+          const result = await (
+            optimizedTools.get_isoline?.execute as (
+              args: Record<string, unknown>
+            ) => Promise<GetIsolineResult | unknown>
+          )(args);
 
-          if (!result || (result as any).isError) {
+          const isolineResult = result as GetIsolineResult;
+          if (!result || isolineResult.isError) {
             return result;
           }
 
           // 2. Extract polygon geometry from result
           // The geometry could be in different places depending on MCP response format
-          const geojson = (result as any).geojson || (result as any).geometry || (result as any).results?.[0]?.geojson;
+          const geojson =
+            isolineResult.geojson ||
+            isolineResult.geometry ||
+            isolineResult.results?.[0]?.geojson;
 
           if (!geojson) {
-            console.log("⚠️ get_isoline: No geometry found in result, returning as-is");
+            console.log(
+              "⚠️ get_isoline: No geometry found in result, returning as-is"
+            );
             return result;
           }
 
@@ -759,13 +851,19 @@ Example BAD response (too verbose):
           let polygonGeometry: Polygon | MultiPolygon | null = null;
 
           if (geojson.type === "Feature") {
-            polygonGeometry = (geojson as Feature<Polygon | MultiPolygon>).geometry;
-          } else if (geojson.type === "Polygon" || geojson.type === "MultiPolygon") {
+            polygonGeometry = (geojson as Feature<Polygon | MultiPolygon>)
+              .geometry;
+          } else if (
+            geojson.type === "Polygon" ||
+            geojson.type === "MultiPolygon"
+          ) {
             polygonGeometry = geojson as Polygon | MultiPolygon;
           }
 
           if (!polygonGeometry) {
-            console.log("⚠️ get_isoline: Could not extract polygon geometry, returning as-is");
+            console.log(
+              "⚠️ get_isoline: Could not extract polygon geometry, returning as-is"
+            );
             return result;
           }
 
@@ -784,7 +882,10 @@ Example BAD response (too verbose):
               const pt = point([lng, lat]);
               return booleanPointInPolygon(pt, polygonGeometry!);
             } catch (e) {
-              console.warn(`⚠️ Point-in-polygon check failed for ${r.slug}:`, e);
+              console.warn(
+                `⚠️ Point-in-polygon check failed for ${r.slug}:`,
+                e
+              );
               return false;
             }
           });
@@ -793,12 +894,14 @@ Example BAD response (too verbose):
 
           console.log(
             `🗺️ get_isoline: Found ${restaurantsInPolygon.length} restaurants in polygon` +
-            (hasFilterPool ? ` (from filterPool of ${filterPool.length})` : ` (from all ${allRestaurants.length})`)
+              (hasFilterPool
+                ? ` (from filterPool of ${filterPool.length})`
+                : ` (from all ${allRestaurants.length})`)
           );
 
           // 6. Return enhanced result with restaurant data
           return {
-            ...result,
+            ...(result as Record<string, unknown>),
             // Restaurant data for the model to use
             restaurants: restaurantsInPolygon.map((r) => ({
               name: r.name,
@@ -814,7 +917,9 @@ Example BAD response (too verbose):
             count: restaurantsInPolygon.length,
             // Metadata about filtering
             filterPoolActive: hasFilterPool,
-            filterPoolSize: hasFilterPool ? filterPool.length : allRestaurants.length,
+            filterPoolSize: hasFilterPool
+              ? filterPool.length
+              : allRestaurants.length,
             searchedPool: searchPool.length,
           };
         },
@@ -826,7 +931,9 @@ Example BAD response (too verbose):
     ...optimizedTools,
     // Override with filtered versions if available
     ...(wrappedExecuteSql ? { execute_sql: wrappedExecuteSql } : {}),
-    ...(wrappedSearchDocuments ? { search_documents: wrappedSearchDocuments } : {}),
+    ...(wrappedSearchDocuments
+      ? { search_documents: wrappedSearchDocuments }
+      : {}),
     ...(wrappedGetIsoline ? { get_isoline: wrappedGetIsoline } : {}),
     displayRestaurants: displayRestaurantsTool,
   };
@@ -845,7 +952,10 @@ Example BAD response (too verbose):
         console.log(
           `🎯 Step: ${step.finishReason}${
             Array.isArray(step.toolCalls) && step.toolCalls.length
-              ? ` | Tools: ${step.toolCalls.filter(Boolean).map((t) => t?.toolName ?? "unknown").join(", ")}`
+              ? ` | Tools: ${step.toolCalls
+                  .filter(Boolean)
+                  .map((t) => t?.toolName ?? "unknown")
+                  .join(", ")}`
               : ""
           }`
         );
@@ -887,16 +997,22 @@ Example BAD response (too verbose):
       500
     );
   }
-});
-
-// Vercel configuration - use Node.js runtime for fs/path APIs
-export const config = {
-  runtime: "nodejs",
 };
 
-// Default export for local development (api/server.ts uses this)
-export default app;
+// Register routes at root level (no prefix)
+// Vercel automatically mounts this file at /api/chat
+// Local dev (_server.ts) manually mounts at /api/chat
+app.post("/", chatHandler);
+app.options("/", async (c) => c.body(null, 204));
 
-// Named exports for Vercel serverless functions
-export const GET = handle(app);
-export const POST = handle(app);
+// Add debug route to see if function is working
+app.get("/", async (c) => {
+  return c.json({
+    message: "Chat API is working",
+    path: c.req.path,
+    url: c.req.url,
+  });
+});
+
+// Export as default for Vercel (api/chat.ts -> /api/chat endpoint)
+export default app;
