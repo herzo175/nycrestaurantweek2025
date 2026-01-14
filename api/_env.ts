@@ -24,8 +24,11 @@ export const env = {
   MCP_ANALYSIS_ID: process.env.MCP_ANALYSIS_ID || "",
 
   // API server configuration
-  API2_PORT: parseInt(process.env.API2_PORT || "3001", 10),
-  NODE_ENV: (process.env.NODE_ENV || "development") as "development" | "production" | "test",
+  API_PORT: parseInt(process.env.API_PORT || "3000", 10),
+  NODE_ENV: (process.env.NODE_ENV || "development") as
+    | "development"
+    | "production"
+    | "test",
 };
 
 /**

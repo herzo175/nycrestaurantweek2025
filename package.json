@@ -6,7 +6,7 @@
   "homepage": "https://nyceats.live",
   "scripts": {
     "dev": "vite",
-    "api2:dev": "tsx watch api2/server.ts",
+    "api:dev": "tsx watch api/_server.ts",
     "build": "tsc && vite build",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
